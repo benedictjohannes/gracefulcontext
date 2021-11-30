@@ -280,6 +280,14 @@ func (gc *gracefulContext) SubscribeCancellation(ctx context.Context) {
 	propagateCancel(gc, ctx)
 }
 
+// CleanupDone is similar to Done() function, but 
+// it is only closed after CleanupFunction exits
+func (gc *gracefulContext) CleanupDone() <-chan struct{} {
+	defer gc.mu.Lock()
+	gc.mu.Lock()
+	return gc.cleanupFuncDoneChan
+}
+
 // Context returns the graceful context as context.Context,
 // along with context.CancelFunc.
 //
