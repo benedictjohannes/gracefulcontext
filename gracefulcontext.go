@@ -15,6 +15,60 @@ var ErrCleanupFuncPending = errors.New("graceful context cleanupFunc is running"
 var ErrCleanupFuncTimeout = errors.New("graceful context cleanupFunc exceeds timeout")
 var ErrContextCancelDone = errors.New("graceful context cancelDoneChan is already closed")
 
+// GracefulContext is the interface implemented by the
+// unexported type gracefulContext that is created
+// by NewGracefulContext(parentCtx)...Make().
+//
+// The exported type is an interface as the implementation
+// provided in this package needs an initialization, the
+// way context.Context keeps implementation private.
+// Exporting helps with package documentation.
+type GracefulContext interface {
+	// Deadline returns the graceful context's deadline.
+	//
+	// gracefulContext does not handle the deadline of
+	// context itself, instead it is offloaded to
+	// context.WithTimeout upon Make(), to
+	// assure full context.Context
+	// compability.
+	Deadline() (time.Time, bool)
+	// Done returns a receive channel on which
+	// the context's cancellation can be
+	// monitored analogous to the
+	// context.Context
+	Done() <-chan struct{}
+	// Err differentiate a bit from the usual context.Context
+	//
+	// It will wrap multiple context errors, to identify
+	// the errors, using errors.Is() is useful
+	// to check the error chain
+	Err() error
+	// Value returns any key associated with
+	// the context's ancestry
+	Value(key interface{}) interface{}
+	// Cancel initiates a cancellation of the gracefulContext,
+	// with respect to the cleanupTimeout and
+	// ImmediatelyPropagateCancel
+	Cancel() error
+	// SubscribeCancellation accepts another context.Context,
+	// which cancellation will trigger cancellation
+	// of this particular graceful context.
+	SubscribeCancellation(context.Context)
+	// CleanupDone is similar to Done() function, but the returned
+	// channel is closed after CleanupFunction exits/timeouts.
+	CleanupDone() <-chan struct{}
+	// Context returns the graceful context as context.Context,
+	// along with context.CancelFunc.
+	//
+	// It eliminates the interfaces outside of context.Context,
+	// which can be is useful to ensure that cancellation
+	// is called to prevent context leaks
+	//
+	// Note that subscribing to a cancelled context
+	// will immediately cancel the gracefulContext.
+	Context() (context.Context, context.CancelFunc)
+}
+
 type gracefulContext struct {
 	// set only on initiation
 	parent                     context.Context
@@ -38,7 +92,9 @@ const (
 	chanDone
 )
 
-type gracefulContextConfig struct {
+// GracefulContextConfig provides modifiable configuration
+// that can be initiated into a new GracefulContext.
+type GracefulContextConfig struct {
 	cleanupTimeout             time.Duration
 	cleanupFunc                func() error
 	immediateCancelPropagation bool
@@ -53,8 +109,12 @@ type gracefulContextConfig struct {
 	value interface{}
 }
 
-func NewGracefulContext(parent context.Context) *gracefulContextConfig {
-	gcc := &gracefulContextConfig{}
+// NewGracefulContext creates a GracefulContextConfig from a
+// paretn context, with methods to configure the context.
+// After modifier functions like WithTimeout, Make()
+// should be called to initialize it as context.
+func NewGracefulContext(parent context.Context) *GracefulContextConfig {
+	gcc := &GracefulContextConfig{}
 	if parent == nil {
 		gcc.parent = context.Background()
 	} else {
@@ -68,8 +128,8 @@ func NewGracefulContext(parent context.Context) *gracefulContextConfig {
 // it can be called multiple times.
 // instead of panicking, it will
 // fail silently when provided
-// key is not comparable
-func (gcc *gracefulContextConfig) WithValue(key interface{}, value interface{}) *gracefulContextConfig {
+// key is not comparable.
+func (gcc *GracefulContextConfig) WithValue(key interface{}, value interface{}) *GracefulContextConfig {
 	if reflect.TypeOf(key).Comparable() {
 		gcc.parent = context.WithValue(gcc.parent, key, value)
 	}
@@ -79,7 +139,7 @@ func (gcc *gracefulContextConfig) WithValue(key interface{}, value interface{}) 
 // WithDeadline sets a deadline that will be make the parent
 // recreated from context.WithDeadline on initialization.
 // Previous WithDeadline and WithTimeout calls are overwritten.
-func (gcc *gracefulContextConfig) WithDeadline(duration time.Time) *gracefulContextConfig {
+func (gcc *GracefulContextConfig) WithDeadline(duration time.Time) *GracefulContextConfig {
 	gcc.deadline = duration
 	gcc.timeout = time.Duration(0)
 	return gcc
@@ -88,41 +148,45 @@ func (gcc *gracefulContextConfig) WithDeadline(duration time.Time) *gracefulCont
 // WithTimeout sets a deadline that will be make the parent
 // recreated from context.WithTimeout on initialization.
 // Previous WithDeadline and WithTimeout calls are overwritten.
-func (gcc *gracefulContextConfig) WithTimeout(timeout time.Duration) *gracefulContextConfig {
+func (gcc *GracefulContextConfig) WithTimeout(timeout time.Duration) *GracefulContextConfig {
 	gcc.timeout = timeout
 	gcc.deadline = time.Time{}
 	return gcc
 }
 
-// WithCleanupFunc assigns a cleanup function to be called when the gracefulContext is cancelled
+// WithCleanupFunc assigns a cleanup function to be called when the gracefulContext is cancelled.
 //
-// the cleanup function is spawned in its goroutine, and the
+// The cleanup function is spawned in its goroutine, and the
 // returned error will be wrapped in the context's error.
-// It's intended to run blocking functions concurrently.
-func (gcc *gracefulContextConfig) WithCleanupFunc(cleanupFunc CleanupFunc) *gracefulContextConfig {
+// It can be used to run blocking functions concurrently.
+func (gcc *GracefulContextConfig) WithCleanupFunc(cleanupFunc CleanupFunc) *GracefulContextConfig {
 	gcc.cleanupFunc = cleanupFunc
 	return gcc
 }
 
-// WithCleanupTimeout sets a timeout after which the gracefulContext is cancelled
+// WithCleanupTimeout sets a timeout after which the gracefulContext is cancelled.
 //
 // When the cleanup timeout expires, the context will have ErrCleanupFuncTimeout
 // wrapped in the gracefulContext's Err(). The cleanup function itself
-// will still run and its error will still be wrapped in the Err()
-func (gcc *gracefulContextConfig) WithCleanupTimeout(cleanupFuncTimeout time.Duration) *gracefulContextConfig {
+// will still run and its error will still be wrapped in the Err().
+func (gcc *GracefulContextConfig) WithCleanupTimeout(cleanupFuncTimeout time.Duration) *GracefulContextConfig {
 	gcc.cleanupTimeout = cleanupFuncTimeout
 	return gcc
 }
 
-// ImmediatelyPropagateCancel will immediately cancel the context,
-// not waiting for the cleanupFunc or cleanupTimeout completion.
-func (gcc *gracefulContextConfig) ImmediatelyPropagateCancel(immediateCancelPropagation bool) *gracefulContextConfig {
+// ImmediatelyPropagateCancel sets the flag whether the GracefulContext
+// is immediately cancelled (and propagated) without waiting
+// for the cleanupFunc or cleanupTimeout completion.
+func (gcc *GracefulContextConfig) ImmediatelyPropagateCancel(immediateCancelPropagation bool) *GracefulContextConfig {
 	gcc.immediateCancelPropagation = immediateCancelPropagation
 	return gcc
 }
 
-// Make initializes the gracefulContext from its configuration
-func (gcc *gracefulContextConfig) Make() *gracefulContext {
+// Make initializes the GracefulContext from the configuration.
+func (gcc *GracefulContextConfig) Make() *gracefulContext {
+	if gcc.parent == nil {
+		gcc.parent = context.Background()
+	}
 	// offload the ValueContext to context
 	if gcc.key != nil {
 		gcc.parent = context.WithValue(gcc.parent, gcc.key, gcc.value)
@@ -280,8 +344,8 @@ func (gc *gracefulContext) SubscribeCancellation(ctx context.Context) {
 	propagateCancel(gc, ctx)
 }
 
-// CleanupDone is similar to Done() function, but 
-// it is only closed after CleanupFunction exits
+// CleanupDone is similar to Done() function, but the returned
+// channel is closed after CleanupFunction exits/timeouts.
 func (gc *gracefulContext) CleanupDone() <-chan struct{} {
 	defer gc.mu.Lock()
 	gc.mu.Lock()

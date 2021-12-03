@@ -17,6 +17,13 @@ func TestGracefulContextInitialization(t *testing.T) {
 	if ctx == nil {
 		t.Fail()
 	}
+	isGracefulContext := func(gc GracefulContext) error {
+		return nil
+	}
+	err := isGracefulContext(ctx)
+	if err != nil {
+		t.Error("gracefulContext fails implement the GracefulContext interface")
+	}
 }
 
 // no error when the parent vanila context.WithCancel is being cancelled and its cancelFunc (itself and its childContexts) are being executed properly
