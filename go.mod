@@ -1,5 +1,5 @@
 module github.com/benedictjohannes/gracefulcontext
 
-go 1.17
+go 1.16
 
 require github.com/pkg/errors v0.9.1
