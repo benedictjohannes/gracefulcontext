@@ -348,7 +348,7 @@ func (gc *gracefulContext) SubscribeCancellation(ctx context.Context) {
 // CleanupDone is similar to Done() function, but the returned
 // channel is closed after CleanupFunction exits/timeouts.
 func (gc *gracefulContext) CleanupDone() <-chan struct{} {
-	defer gc.mu.Lock()
+	defer gc.mu.Unlock()
 	gc.mu.Lock()
 	return gc.cleanupFuncDoneChan
 }
