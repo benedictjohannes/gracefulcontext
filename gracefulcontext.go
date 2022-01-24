@@ -208,6 +208,7 @@ func (gcc *GracefulContextConfig) Make() *gracefulContext {
 		immediateCancelPropagation: gcc.immediateCancelPropagation,
 		cleanupFuncDoneChan:        make(chan struct{}),
 		cleanupFuncStartChan:       make(chan struct{}),
+		cleanupFuncErrChan:         make(chan error),
 		doneChan:                   make(chan struct{}),
 	}
 	gc.cancel = func() {
@@ -217,20 +218,24 @@ func (gcc *GracefulContextConfig) Make() *gracefulContext {
 		gc.setError(ErrCleanupFuncPending)
 		gc.safelyCloseStrucChan(chanCleanupFuncStart)
 	}
-	go cleanupFuncDoneErrWatcher(gc)
+	go cleanupFuncDoneWatcher(gc)
 	go cleanupFuncStartWatcher(gc, gcc.cleanupFunc, gcc.cleanupTimeout)
 	propagateCancel(gc, gc.parent)
 	return gc
 }
 
-func cleanupFuncDoneErrWatcher(gc *gracefulContext) {
-	err := <-gc.cleanupFuncErrChan
-	if err == nil {
-		err = ErrContextCancelDone
+func cleanupFuncDoneWatcher(gc *gracefulContext) {
+	for {
+		select {
+		case err := <-gc.cleanupFuncErrChan:
+			gc.setError(err)
+		case <-gc.cleanupFuncDoneChan:
+			gc.safelyCloseStrucChan(chanDone)
+			close(gc.cleanupFuncErrChan)
+			goto DONE
+		}
 	}
-	gc.setError(err)
-	gc.safelyCloseStrucChan(chanCleanupFuncDone)
-	gc.safelyCloseStrucChan(chanDone)
+DONE:
 }
 func cleanupFuncStartWatcher(
 	gc *gracefulContext,
@@ -243,9 +248,9 @@ func cleanupFuncStartWatcher(
 	<-gc.cleanupFuncStartChan
 	if cleanupFunc != nil {
 		gc.safelyCloseStrucChan(chanCleanupFuncStart)
-		go runCleanupFunc(cleanupFunc, gc.cleanupFuncErrChan)
+		go runCleanupFunc(cleanupFunc, gc.cleanupFuncErrChan, gc.cleanupFuncDoneChan)
 		if cleanupFuncTimeout != time.Duration(0) {
-			go runCleanupTimer(cleanupFuncTimeout, gc.cleanupFuncErrChan)
+			go runCleanupTimer(cleanupFuncTimeout, gc.cleanupFuncErrChan, gc.cleanupFuncDoneChan)
 		}
 		if gc.immediateCancelPropagation {
 			safelyNonblockinglySendErrChan(gc.cleanupFuncErrChan, ErrContextCancelled)
@@ -255,24 +260,26 @@ func cleanupFuncStartWatcher(
 		gc.safelyCloseStrucChan(chanCleanupFuncStart)
 		gc.safelyCloseStrucChan(chanCleanupFuncDone)
 		safelyNonblockinglySendErrChan(gc.cleanupFuncErrChan, ErrContextCancelled)
-		gc.safelyCloseStrucChan(chanDone)
 	}
 }
-func runCleanupFunc(cleanupFunc func() error, errC chan error) {
+func runCleanupFunc(cleanupFunc func() error, errC chan error, doneC chan struct{}) {
 	err := cleanupFunc()
 	if err != nil {
 		err = ErrContextCancelDone
 	}
 	select {
-	case errC <- err:
+	case <-doneC:
 	default:
+		errC <- err
+		close(doneC)
 	}
 }
-func runCleanupTimer(cleanupTimeout time.Duration, errC chan error) {
-	time.Sleep(cleanupTimeout)
+func runCleanupTimer(cleanupTimeout time.Duration, errC chan error, doneC chan struct{}) {
 	select {
-	case errC <- ErrCleanupFuncTimeout:
-	default:
+	case <-time.After(cleanupTimeout):
+		errC <- ErrCleanupFuncTimeout
+		close(doneC)
+	case <-doneC:
 	}
 }
 func propagateCancel(subscriber *gracefulContext, sender context.Context) {
@@ -348,8 +355,6 @@ func (gc *gracefulContext) SubscribeCancellation(ctx context.Context) {
 // CleanupDone is similar to Done() function, but the returned
 // channel is closed after CleanupFunction exits/timeouts.
 func (gc *gracefulContext) CleanupDone() <-chan struct{} {
-	defer gc.mu.Unlock()
-	gc.mu.Lock()
 	return gc.cleanupFuncDoneChan
 }
 
