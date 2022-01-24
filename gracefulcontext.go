@@ -230,6 +230,7 @@ func cleanupFuncDoneErrWatcher(gc *gracefulContext) {
 	}
 	gc.setError(err)
 	gc.safelyCloseStrucChan(chanCleanupFuncDone)
+	gc.safelyCloseStrucChan(chanDone)
 }
 func cleanupFuncStartWatcher(
 	gc *gracefulContext,
