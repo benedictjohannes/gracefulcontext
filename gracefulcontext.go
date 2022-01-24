@@ -239,8 +239,8 @@ func cleanupFuncStartWatcher(
 	if gc.safelyCheckStructChanClosed(chanCleanupFuncDone) {
 		return
 	}
+	<-gc.cleanupFuncStartChan
 	if cleanupFunc != nil {
-		<-gc.cleanupFuncStartChan
 		gc.safelyCloseStrucChan(chanCleanupFuncStart)
 		go runCleanupFunc(cleanupFunc, gc.cleanupFuncErrChan)
 		if cleanupFuncTimeout != time.Duration(0) {
@@ -253,8 +253,8 @@ func cleanupFuncStartWatcher(
 	} else {
 		gc.safelyCloseStrucChan(chanCleanupFuncStart)
 		gc.safelyCloseStrucChan(chanCleanupFuncDone)
-		gc.safelyCloseStrucChan(chanDone)
 		safelyNonblockinglySendErrChan(gc.cleanupFuncErrChan, ErrContextCancelled)
+		gc.safelyCloseStrucChan(chanDone)
 	}
 }
 func runCleanupFunc(cleanupFunc func() error, errC chan error) {
