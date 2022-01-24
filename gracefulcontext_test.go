@@ -96,7 +96,7 @@ func testGracefulContextDelayedCancellation(t *testing.T) {
 	}
 	err = ctx2.Cancel()
 	if err != nil {
-		t.Error("Error: ", time.Now(), "ctx2: cancelling a new gracefulContext result in error")
+		t.Error("Error: ", time.Now(), "ctx2: cancelling result in error, when it should not have been cancelled")
 	}
 	// give the goroutine some time to start the cancellation
 	time.Sleep(time.Millisecond * time.Duration(10))
@@ -105,11 +105,9 @@ func testGracefulContextDelayedCancellation(t *testing.T) {
 		t.Error("Error:", time.Now(), "ctx2: no error when cancelling a cancelled gracefulContext, error: ", err)
 	}
 	err = ctx3.Err()
-	if err != nil && !errors.Is(err, ErrCleanupFuncPending) {
-		t.Error("Error:", time.Now(), "ctx3 is cancelled before the graceContext timeout (1 second) is over, error: ", err)
+	if err == nil {
+		t.Error("Error:", time.Now(), "ctx3: Immediately propagated context cancellation from ctx2 not propagated ", err)
 	}
-	// sleep 1s, by now, the ctx3 should have been cancelled
-	time.Sleep(time.Millisecond * time.Duration(100))
 	err = ctx3.Cancel()
 	if err == nil {
 		t.Error("Error:", time.Now(), "ctx3: no error when cancelling a cancelled gracefulContext, error: ", err)
@@ -118,22 +116,21 @@ func testGracefulContextDelayedCancellation(t *testing.T) {
 	time.Sleep(time.Millisecond * time.Duration(200))
 	result := w.String()
 	if result != "zxy" && result != "zyx" {
-		t.Error("Error:", time.Now(), "resulting written is not as expected: ", result)
+		t.Error("Error:", time.Now(), "result written is not as expected: ", result)
 	}
 }
 
 // concurrent run: no error when the context is being cancelled with timeout for completion of cancelFuncs
 func TestGracefulContextDelayedCancellation(t *testing.T) {
 	wg := sync.WaitGroup{}
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			testGracefulContextDelayedCancellation(t)
 			wg.Done()
-			wg.Wait()
 		}()
 	}
-
+	wg.Wait()
 }
 
 // no error on propagation of a context to its subscription
